@@ -41,6 +41,33 @@ console.log(`📱 Admin ID: ${adminId || 'Not set'}`);
 console.log('🤖 Bot is ready and listening for messages...\n');
 
 /**
+ * Escape special characters for Telegram Markdown
+ */
+function escapeMarkdown(text) {
+  if (!text) return '';
+  // Escape special Markdown characters but preserve intentional formatting
+  return text
+    .replace(/\\/g, '\\\\')
+    .replace(/_/g, '\\_')
+    .replace(/\*/g, '\\*')
+    .replace(/\[/g, '\\[')
+    .replace(/]/g, '\\]')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)')
+    .replace(/~/g, '\\~')
+    .replace(/>/g, '\\>')
+    .replace(/#/g, '\\#')
+    .replace(/\+/g, '\\+')
+    .replace(/-/g, '\\-')
+    .replace(/=/g, '\\=')
+    .replace(/\|/g, '\\|')
+    .replace(/\{/g, '\\{')
+    .replace(/}/g, '\\}')
+    .replace(/\./g, '\\.')
+    .replace(/!/g, '\\!');
+}
+
+/**
  * Format response for Telegram (convert markdown-like text)
  */
 function formatTelegramMessage(text, useMarkdown = false) {
@@ -104,9 +131,10 @@ async function handleAgentResponse(chatId, response) {
         
       case 'terminalCommand':
         // Terminal command (requires approval)
+        const reasoning = escapeMarkdown(response.commandReasoning || response.reasoning);
         const cmdMsg = `💻 *Terminal Command:*\n\n` +
                       `\`${response.terminalCommand}\`\n\n` +
-                      `📝 *Reasoning:* ${response.commandReasoning || response.reasoning}\n\n` +
+                      `📝 *Reasoning:* ${reasoning}\n\n` +
                       `⚠️ *Awaiting your approval to execute*`;
         
         // Store command for approval
@@ -118,15 +146,31 @@ async function handleAgentResponse(chatId, response) {
         });
         
         // Send message with inline approval buttons
-        await bot.sendMessage(chatId, cmdMsg, { 
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [[
-              { text: '✅ Execute', callback_data: 'approve_command' },
-              { text: '❌ Cancel', callback_data: 'deny_command' }
-            ]]
-          }
-        });
+        try {
+          await bot.sendMessage(chatId, cmdMsg, { 
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '✅ Execute', callback_data: 'approve_command' },
+                { text: '❌ Cancel', callback_data: 'deny_command' }
+              ]]
+            }
+          });
+        } catch (markdownError) {
+          // If Markdown fails, send without formatting
+          console.warn('⚠️ Markdown parsing error, sending as plain text:', markdownError.message);
+          const plainMsg = `💻 Terminal Command:\n\n${response.terminalCommand}\n\n` +
+                          `📝 Reasoning: ${response.commandReasoning || response.reasoning}\n\n` +
+                          `⚠️ Awaiting your approval to execute`;
+          await bot.sendMessage(chatId, plainMsg, { 
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '✅ Execute', callback_data: 'approve_command' },
+                { text: '❌ Cancel', callback_data: 'deny_command' }
+              ]]
+            }
+          });
+        }
         break;
         
       case 'plan':
