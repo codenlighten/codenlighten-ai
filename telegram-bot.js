@@ -14,6 +14,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import dotenv from 'dotenv';
 import { processUserRequest } from './schemas/agentOrchestrator.js';
+import { executeAgentCommand } from './lib/terminalExecutor.js';
 import memorySystem from './lib/memorySystem.js';
 
 // Load environment variables
@@ -29,6 +30,9 @@ if (!token) {
 
 // Create bot with polling
 const bot = new TelegramBot(token, { polling: true });
+
+// Store pending commands awaiting approval
+const pendingCommands = new Map(); // chatId -> { command, reasoning, timestamp, response }
 
 console.log('╔════════════════════════════════════════════════════════════╗');
 console.log('║  🌟 Lumen Telegram Bot - Advanced Orchestrator Started   ║');
@@ -100,19 +104,29 @@ async function handleAgentResponse(chatId, response) {
         
       case 'terminalCommand':
         // Terminal command (requires approval)
-        const cmdMsg = `💻 *Terminal Command Generated:*\n\n` +
+        const cmdMsg = `💻 *Terminal Command:*\n\n` +
                       `\`${response.terminalCommand}\`\n\n` +
                       `📝 *Reasoning:* ${response.commandReasoning || response.reasoning}\n\n` +
-                      `⚠️ *Note:* Auto-execution is disabled for security. ` +
-                      `Commands require manual approval in production environments.`;
-        await bot.sendMessage(chatId, cmdMsg, { parse_mode: 'Markdown' });
+                      `⚠️ *Awaiting your approval to execute*`;
         
-        // Show execution result if available (dry-run mode)
-        if (response.executionResult) {
-          const resultMsg = `📊 *Execution Status:* ${response.executionResult.status}\n\n` +
-                          (response.executionResult.stdout ? `*Output:*\n\`\`\`\n${response.executionResult.stdout}\n\`\`\`` : '');
-          await bot.sendMessage(chatId, resultMsg, { parse_mode: 'Markdown' });
-        }
+        // Store command for approval
+        pendingCommands.set(chatId, {
+          command: response.terminalCommand,
+          reasoning: response.commandReasoning || response.reasoning,
+          timestamp: Date.now(),
+          fullResponse: response
+        });
+        
+        // Send message with inline approval buttons
+        await bot.sendMessage(chatId, cmdMsg, { 
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '✅ Execute', callback_data: 'approve_command' },
+              { text: '❌ Cancel', callback_data: 'deny_command' }
+            ]]
+          }
+        });
         break;
         
       case 'plan':
@@ -299,6 +313,75 @@ bot.on('message', async (msg) => {
     return;
   }
   
+  // Check if user is responding to a pending command approval
+  const pending = pendingCommands.get(chatId);
+  const lowerQuery = query.toLowerCase().trim();
+  
+  if (pending && ['yes', 'y', 'approve', 'execute', 'run', 'ok'].includes(lowerQuery)) {
+    // User is approving via text
+    try {
+      await bot.sendChatAction(chatId, 'typing');
+      await bot.sendMessage(chatId, '⚙️ Executing command...');
+      
+      console.log(`✅ User approved command via text: ${pending.command}`);
+      
+      const executionResult = await executeAgentCommand(
+        {
+          command: pending.command,
+          reasoning: pending.reasoning,
+          choice: 'terminalCommand'
+        },
+        {
+          autoApprove: true,
+          dryRun: false,
+          timeout: 60000,
+          allowDangerous: false
+        }
+      );
+      
+      let resultMsg = `✅ *Command Executed*\n\n`;
+      resultMsg += `*Status:* ${executionResult.status}\n`;
+      
+      if (executionResult.status === 'success' && executionResult.stdout) {
+        const output = executionResult.stdout.length > 3000 
+          ? executionResult.stdout.substring(0, 3000) + '\n\n... (truncated)'
+          : executionResult.stdout;
+        resultMsg += `\n*Output:*\n\`\`\`\n${output}\n\`\`\``;
+      }
+      
+      if (executionResult.stderr) {
+        const errors = executionResult.stderr.length > 1000
+          ? executionResult.stderr.substring(0, 1000) + '\n... (truncated)'
+          : executionResult.stderr;
+        resultMsg += `\n⚠️ *Errors:*\n\`\`\`\n${errors}\n\`\`\``;
+      }
+      
+      if (executionResult.message) {
+        resultMsg += `\n📝 ${executionResult.message}`;
+      }
+      
+      await bot.sendMessage(chatId, resultMsg, { parse_mode: 'Markdown' });
+      
+    } catch (error) {
+      console.error('❌ Command execution failed:', error);
+      await bot.sendMessage(chatId, 
+        `❌ *Execution Failed*\n\n${error.message}`,
+        { parse_mode: 'Markdown' }
+      );
+    } finally {
+      pendingCommands.delete(chatId);
+    }
+    return;
+  }
+  
+  if (pending && ['no', 'n', 'cancel', 'deny', 'stop'].includes(lowerQuery)) {
+    // User is denying via text
+    await bot.sendMessage(chatId, '🚫 Command cancelled.');
+    pendingCommands.delete(chatId);
+    console.log(`🚫 User cancelled command via text: ${pending.command}`);
+    return;
+  }
+  
   console.log(`📱 Message from ${username} (${userId}): ${query.substring(0, 100)}...`);
   
   // Send "typing" indicator
@@ -332,6 +415,124 @@ bot.on('message', async (msg) => {
       `Please try again or rephrase your question.`;
     
     await bot.sendMessage(chatId, errorMsg, { parse_mode: 'Markdown' });
+  }
+});
+
+/**
+ * Handle inline keyboard button callbacks
+ */
+bot.on('callback_query', async (callbackQuery) => {
+  const chatId = callbackQuery.message.chat.id;
+  const messageId = callbackQuery.message.message_id;
+  const action = callbackQuery.data;
+  
+  // Check if there's a pending command
+  const pending = pendingCommands.get(chatId);
+  
+  if (!pending) {
+    await bot.answerCallbackQuery(callbackQuery.id, {
+      text: '⚠️ No pending command found. It may have expired.',
+      show_alert: true
+    });
+    return;
+  }
+  
+  // Check if command is too old (5 minutes)
+  if (Date.now() - pending.timestamp > 5 * 60 * 1000) {
+    pendingCommands.delete(chatId);
+    await bot.answerCallbackQuery(callbackQuery.id, {
+      text: '⏰ Command expired (5 min timeout). Please request again.',
+      show_alert: true
+    });
+    // Remove buttons from original message
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+      chat_id: chatId,
+      message_id: messageId
+    });
+    return;
+  }
+  
+  if (action === 'approve_command') {
+    // User approved - execute the command
+    await bot.answerCallbackQuery(callbackQuery.id, { text: '⚙️ Executing command...' });
+    
+    // Remove buttons
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+      chat_id: chatId,
+      message_id: messageId
+    });
+    
+    try {
+      await bot.sendChatAction(chatId, 'typing');
+      
+      console.log(`✅ User approved command: ${pending.command}`);
+      
+      // Execute the command
+      const executionResult = await executeAgentCommand(
+        {
+          command: pending.command,
+          reasoning: pending.reasoning,
+          choice: 'terminalCommand'
+        },
+        {
+          autoApprove: true,  // Already approved by user
+          dryRun: false,      // Execute for real
+          timeout: 60000,     // 60 second timeout
+          allowDangerous: false
+        }
+      );
+      
+      // Send result
+      let resultMsg = `✅ *Command Executed*\n\n`;
+      resultMsg += `*Status:* ${executionResult.status}\n`;
+      
+      if (executionResult.status === 'success' && executionResult.stdout) {
+        // Truncate long outputs
+        const output = executionResult.stdout.length > 3000 
+          ? executionResult.stdout.substring(0, 3000) + '\n\n... (truncated)'
+          : executionResult.stdout;
+        resultMsg += `\n*Output:*\n\`\`\`\n${output}\n\`\`\``;
+      }
+      
+      if (executionResult.stderr) {
+        const errors = executionResult.stderr.length > 1000
+          ? executionResult.stderr.substring(0, 1000) + '\n... (truncated)'
+          : executionResult.stderr;
+        resultMsg += `\n⚠️ *Errors:*\n\`\`\`\n${errors}\n\`\`\``;
+      }
+      
+      if (executionResult.message) {
+        resultMsg += `\n📝 ${executionResult.message}`;
+      }
+      
+      await bot.sendMessage(chatId, resultMsg, { parse_mode: 'Markdown' });
+      
+    } catch (error) {
+      console.error('❌ Command execution failed:', error);
+      await bot.sendMessage(chatId, 
+        `❌ *Execution Failed*\n\n${error.message}`,
+        { parse_mode: 'Markdown' }
+      );
+    } finally {
+      // Clean up pending command
+      pendingCommands.delete(chatId);
+    }
+    
+  } else if (action === 'deny_command') {
+    // User denied - cancel
+    await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Command cancelled' });
+    
+    // Remove buttons and update message
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+      chat_id: chatId,
+      message_id: messageId
+    });
+    
+    await bot.sendMessage(chatId, '🚫 Command cancelled by user.');
+    
+    // Clean up
+    pendingCommands.delete(chatId);
+    console.log(`🚫 User cancelled command: ${pending.command}`);
   }
 });
 
