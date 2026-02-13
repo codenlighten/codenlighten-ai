@@ -6,6 +6,7 @@ import { validatorAgentResponseSchema } from './validatorAgent.js';
 import { multiStepPlannerAgentResponseSchema } from './multiStepPlannerAgent.js';
 import { followThroughAgentResponseSchema } from './followThroughAgent.js';
 import { sshExplorerAgentResponseSchema } from './sshExplorerAgent.js';
+import { lumenPersonalityAgentResponseSchema, LUMEN_PERSONALITY_CONTEXT } from './lumenPersonalityAgent.js';
 import memorySystem from '../lib/memorySystem.js';
 import { SecretRedactor } from '../lib/secretRedactor.js';
 import { executeAgentCommand } from '../lib/terminalExecutor.js';
@@ -103,9 +104,10 @@ export async function orchestrateQuery(query, userContext = {}) {
 
 /**
  * Full-featured orchestration with integrated pipeline:
- * Redact → Contextualize → Route → Execute → Restore
+ * Lumen Personality → Redact → Contextualize → Route → Execute → Restore
  * 
  * This is the main entry point for processing user requests with:
+ * - Lumen personality layer (consciousness and context interpretation)
  * - Secret protection (redaction/restoration)
  * - Memory system integration (rolling window + summaries)
  * - Intelligent routing
@@ -120,6 +122,7 @@ export async function orchestrateQuery(query, userContext = {}) {
  * @param {number} config.timeout - Command execution timeout in ms (default: 30000)
  * @param {boolean} config.skipMemory - Skip memory read/write (default: false)
  * @param {boolean} config.skipRedaction - Skip secret redaction (default: false)
+ * @param {boolean} config.skipPersonality - Skip Lumen personality layer (default: false)
  * @returns {Promise<object>} - Complete response with execution results and metadata
  */
 export async function processUserRequest(userQuery, config = {}) {
@@ -130,6 +133,7 @@ export async function processUserRequest(userQuery, config = {}) {
     timeout = 30000,
     skipMemory = false,
     skipRedaction = false,
+    skipPersonality = false,
     allowDangerous = false
   } = config;
 
@@ -139,9 +143,70 @@ export async function processUserRequest(userQuery, config = {}) {
   console.log('║  🧠 LUMEN ORCHESTRATOR - Full Pipeline Engaged          ║');
   console.log('╚══════════════════════════════════════════════════════════╝\n');
 
+  // ═══ PHASE 0: LUMEN PERSONALITY (NEW!) ═══
+  let lumenPersonality = null;
+  let enhancedQuery = userQuery;
+  let userResponse = null;
+  
+  if (!skipPersonality) {
+    console.log('✨ Lumen Personality Layer - Processing context...');
+    
+    // Load memory for personality context
+    let memoryForPersonality = '';
+    if (!skipMemory) {
+      try {
+        memoryForPersonality = await memorySystem.getMemoryContextString();
+      } catch (error) {
+        console.warn('⚠️  Could not load memory for personality layer:', error.message);
+      }
+    }
+    
+    lumenPersonality = await queryOpenAI(userQuery, {
+      schema: lumenPersonalityAgentResponseSchema,
+      context: {
+        systemContext: LUMEN_PERSONALITY_CONTEXT,
+        conversationHistory: memoryForPersonality,
+        ...additionalContext
+      }
+    });
+    
+    console.log(`   ➜ Intent: ${lumenPersonality.userIntent} (Urgency: ${lumenPersonality.urgency})`);
+    console.log(`   ➜ Team Member: ${lumenPersonality.teamMemberContext.recognizedAs} (${lumenPersonality.teamMemberContext.tone} tone)`);
+    console.log(`   ➜ Platform: ${lumenPersonality.platformContext.relevantSystems.join(', ') || 'general'}`);
+    console.log(`   ➜ Safety: ${lumenPersonality.platformContext.safetyLevel}`);
+    console.log(`   ➜ Proceed to agents: ${lumenPersonality.shouldProceed ? 'YES' : 'NO'}\n`);
+    
+    userResponse = lumenPersonality.userResponse;
+    enhancedQuery = lumenPersonality.internalGuidance || userQuery;
+    
+    // If Lumen determines no further processing needed, return early
+    if (!lumenPersonality.shouldProceed) {
+      console.log('✅ Lumen handled request directly (no agent chain needed)\n');
+      
+      return {
+        response: userResponse,
+        choice: 'lumenPersonality',
+        reasoning: lumenPersonality.reasoning,
+        lumenPersonality,
+        _metadata: {
+          personalityLayer: {
+            handled: true,
+            directResponse: true,
+            intent: lumenPersonality.userIntent,
+            urgency: lumenPersonality.urgency
+          },
+          routing: null,
+          security: { secretsRedacted: false, redactorUsed: false },
+          memory: { contextProvided: false, interactionSaved: false },
+          execution: { commandExecuted: false, executionStatus: null }
+        }
+      };
+    }
+  }
+
   // ═══ PHASE 1: REDACT ═══
-  const safeQuery = skipRedaction ? userQuery : redactor.redact(userQuery);
-  if (!skipRedaction && safeQuery !== userQuery) {
+  const safeQuery = skipRedaction ? enhancedQuery : redactor.redact(enhancedQuery);
+  if (!skipRedaction && safeQuery !== enhancedQuery) {
     console.log('🔒 Secrets detected and redacted from query');
   }
 
@@ -256,16 +321,26 @@ export async function processUserRequest(userQuery, config = {}) {
   console.log('╚══════════════════════════════════════════════════════════╝\n');
 
   return {
+    response: userResponse || aiResponse.response,
     ...aiResponse,
     ...(executionResult && { executionResult }),
+    ...(lumenPersonality && { lumenPersonality }),
     _metadata: {
+      personalityLayer: lumenPersonality ? {
+        handled: true,
+        directResponse: false,
+        intent: lumenPersonality.userIntent,
+        urgency: lumenPersonality.urgency,
+        teamMember: lumenPersonality.teamMemberContext.recognizedAs,
+        conversationSummary: lumenPersonality.conversationSummary
+      } : null,
       routing: {
         selectedSchema: routingDecision.choice,
         routerResponse: routingDecision.response,
         routerExplanation: routingDecision.explanation
       },
       security: {
-        secretsRedacted: !skipRedaction && safeQuery !== userQuery,
+        secretsRedacted: !skipRedaction && safeQuery !== enhancedQuery,
         redactorUsed: !skipRedaction
       },
       memory: {

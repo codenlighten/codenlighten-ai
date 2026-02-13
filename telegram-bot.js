@@ -55,6 +55,18 @@ function formatTelegramMessage(text, useMarkdown = false) {
  */
 async function handleAgentResponse(chatId, response) {
   try {
+    // ═══ LUMEN PERSONALITY FIRST ═══
+    // If Lumen provided a direct response, send it first
+    if (response.lumenPersonality?.userResponse) {
+      const lumenMsg = `✨ *Lumen:* ${response.lumenPersonality.userResponse}`;
+      await bot.sendMessage(chatId, lumenMsg, { parse_mode: 'Markdown' });
+      
+      // If Lumen handled it directly (no further agents), we're done
+      if (response.choice === 'lumenPersonality') {
+        return;
+      }
+    }
+    
     switch (response.choice) {
       case 'response':
         // Conversational response

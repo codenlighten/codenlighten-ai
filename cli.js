@@ -141,6 +141,14 @@ function displayResponse(response) {
   
   // Display based on response type
   switch (response.choice) {
+    case 'lumenPersonality':
+      // Lumen handled directly without agent chain
+      console.log(colors.bright + '\n' + response.response + colors.reset);
+      if (response.lumenPersonality?.conversationSummary) {
+        console.log(colors.dim + '\n📝 Context: ' + response.lumenPersonality.conversationSummary + colors.reset);
+      }
+      break;
+      
     case 'response':
       console.log(colors.bright + '\n' + response.response + colors.reset);
       if (response.questionsForUser && response.questions?.length > 0) {
