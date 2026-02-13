@@ -1,0 +1,43 @@
+{
+  "name": "baseagent",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "directories": {
+    "lib": "lib"
+  },
+  "bin": {
+    "lumen": "./cli.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "lumen": "node cli.js",
+    "examples": "node examples/orchestrator-demo.js",
+    "examples:advanced": "node examples/advanced-coordination.js",
+    "telegram": "node telegram-bot.js",
+    "telegram-group": "node telegram-group-bot.js",
+    "chat": "node chat-cli.js",
+    "chat-group": "node chat-group-cli.js",
+    "iteration-loop": "node exampleIterationLoop.js",
+    "test-iteration": "node testIterationLoop.js",
+    "test-base": "node testBaseAgent.js",
+    "demo-complete": "node demoComplete.js",
+    "test-serious-app": "node testSeriousApp.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.4",
+    "express": "^4.22.1",
+    "jsonwebtoken": "^9.0.3",
+    "node-telegram-bot-api": "^0.67.0",
+    "openai": "^6.19.0",
+    "uuid": "^13.0.0",
+    "ws": "^8.19.0"
+  }
+}
